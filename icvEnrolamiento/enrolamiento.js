@@ -195,7 +195,7 @@ async function workerPorAnio(anio) {
 
             // 1. Actualizar Exitosos (Status 1)
             if (exitosos.length > 0) {
-                await connection.executeMany(
+                const updateResult = await connection.executeMany(
                     `
                     UPDATE licencias_icv
                     SET procesada = 1
@@ -203,12 +203,16 @@ async function workerPorAnio(anio) {
                     `,
                     exitosos
                 );
-                console.log(`   ✔ ${exitosos.length} registros exitosos para año ${anio}`);
+                const affected = updateResult.rowsAffected || 0;
+                console.log(`   ✔ ${exitosos.length} enviados -> ${affected} filas actualizadas en DB (Exitosos)`);
+                if (exitosos.length > 0) {
+                    console.log(`     Muestra: [${exitosos[0].licencia} ... ${exitosos[exitosos.length-1].licencia}]`);
+                }
             }
 
-            // 2. Actualizar Fallidos (Status 4) para evitar bucle infinito
+            // 2. Actualizar Fallidos (Status 4)
             if (fallidos.length > 0) {
-                await connection.executeMany(
+                const updateResult = await connection.executeMany(
                     `
                     UPDATE licencias_icv
                     SET procesada = 4
@@ -216,7 +220,8 @@ async function workerPorAnio(anio) {
                     `,
                     fallidos
                 );
-                console.log(`   ❌ ${fallidos.length} registros con error para año ${anio}`);
+                const affected = updateResult.rowsAffected || 0;
+                console.log(`   ❌ ${fallidos.length} enviados -> ${affected} filas actualizadas en DB (Fallidos)`);
             }
 
             // Commit de los cambios del lote
