@@ -70,7 +70,7 @@ async function obtenerBase64(foto) {
         if (finalData.HayError === 'true' || finalData.HayError === true) {
             throw new Error(finalData.Error || 'Error desconocido en el servicio SOAP');
         }
-        console.log("finalData -> ", JSON.stringify(finalData).substring(0, 100));
+        // console.log("finalData -> ", JSON.stringify(finalData).substring(0, 100));
         return finalData.Archivo || "";
 
     } catch (err) {
@@ -98,7 +98,7 @@ async function procesarImagen(base64, row) {
         }
     };
 
-    console.log("payload -> ", JSON.stringify(payload).substring(0, 600));
+    // console.log("payload -> ", JSON.stringify(payload).substring(0, 600));
 
     try {
         const resp = await axios.post(REGULA_URL, payload, {
@@ -162,7 +162,7 @@ async function workerPorAnio(anio) {
                 FROM (
                     SELECT *
                     FROM licencias_icv
-                    WHERE procesada = 5
+                    WHERE procesada = 0
                     AND TO_CHAR(fecha_pago, 'YYYY') = :anio
                     ORDER BY fecha_pago DESC, licencia DESC
                 )
@@ -247,7 +247,7 @@ async function taskOracleCheck() {
 
     try {
         // Ajusta los años según tus datos
-        const anios = [2024];
+        const anios = [2024, 2025, 2026];
 
         await Promise.all(
             anios.map(anio => workerPorAnio(anio))
