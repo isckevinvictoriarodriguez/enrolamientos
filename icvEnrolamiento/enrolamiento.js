@@ -120,25 +120,45 @@ async function procesarImagen(base64, row) {
 
 async function procesarLote(rows) {
     const limit = pLimit(CONCURRENCIA);
+    const startTime = Date.now();
 
     const resultados = await Promise.all(
         rows.map(row =>
             limit(async () => {
+                const rowStart = Date.now();
+                let soapTime = 0;
+                let regulaTime = 0;
                 try {
+                    const soapStart = Date.now();
                     const base64 = await obtenerBase64(row.FOTO);
+                    soapTime = Date.now() - soapStart;
+
+                    const regulaStart = Date.now();
                     const resp = await procesarImagen(base64, row);
+                    regulaTime = Date.now() - regulaStart;
+
+                    const totalRow = Date.now() - rowStart;
+
                     return {
                         licencia: row.LICENCIA,
-                        ok: resp.success === true
+                        ok: resp.success === true,
+                        soapTime,
+                        regulaTime
                     };
 
                 } catch (err) {
                     console.error(`LICENCIA ICV: ${row.LICENCIA} -> `, err.message);
-                    return { licencia: row.LICENCIA, ok: false };
+                    return { licencia: row.LICENCIA, ok: false, soapTime, regulaTime };
                 }
             })
         )
     );
+
+    const totalBatchTime = Date.now() - startTime;
+    const avgSoap = resultados.reduce((a, b) => a + b.soapTime, 0) / rows.length;
+    const avgRegula = resultados.reduce((a, b) => a + b.regulaTime, 0) / rows.length;
+
+    console.log(`   ⏱ Métricas Lote: Prom. SOAP: ${avgSoap.toFixed(0)}ms | Prom. Regula: ${avgRegula.toFixed(0)}ms | Tiempo Real Lote: ${(totalBatchTime / 1000).toFixed(1)}s`);
 
     return resultados;
 }
