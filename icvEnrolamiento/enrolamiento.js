@@ -118,7 +118,7 @@ async function procesarImagen(base64, row) {
 // PROCESAMIENTO
 // =====================================
 
-async function procesarLote(rows) {
+async function procesarLote(rows, connection) {
     const limit = pLimit(CONCURRENCIA);
     const startTime = Date.now();
 
@@ -137,8 +137,6 @@ async function procesarLote(rows) {
                     const resp = await procesarImagen(base64, row);
                     regulaTime = Date.now() - regulaStart;
 
-                    const totalRow = Date.now() - rowStart;
-
                     return {
                         licencia: row.LICENCIA,
                         ok: resp.success === true,
@@ -154,11 +152,40 @@ async function procesarLote(rows) {
         )
     );
 
-    const totalBatchTime = Date.now() - startTime;
+    const totalProcessingTime = Date.now() - startTime;
+
+    // Separar éxitos de errores
+    const exitosos = resultados.filter(r => r.ok).map(r => ({ licencia: r.licencia }));
+    const fallidos = resultados.filter(r => !r.ok).map(r => ({ licencia: r.licencia }));
+
+    let updateTime = 0;
+    const updateStart = Date.now();
+
+    // 1. Actualizar Exitosos (Status 1)
+    if (exitosos.length > 0) {
+        const updateResult = await connection.executeMany(
+            `UPDATE licencias_icv SET procesada = 1 WHERE licencia = :licencia`,
+            exitosos
+        );
+    }
+
+    // 2. Actualizar Fallidos (Status 4)
+    if (fallidos.length > 0) {
+        await connection.executeMany(
+            `UPDATE licencias_icv SET procesada = 4 WHERE licencia = :licencia`,
+            fallidos
+        );
+    }
+
+    if (exitosos.length > 0 || fallidos.length > 0) {
+        await connection.commit();
+    }
+    updateTime = Date.now() - updateStart;
+
     const avgSoap = resultados.reduce((a, b) => a + b.soapTime, 0) / rows.length;
     const avgRegula = resultados.reduce((a, b) => a + b.regulaTime, 0) / rows.length;
 
-    console.log(`   ⏱ Métricas Lote: Prom. SOAP: ${avgSoap.toFixed(0)}ms | Prom. Regula: ${avgRegula.toFixed(0)}ms | Tiempo Real Lote: ${(totalBatchTime / 1000).toFixed(1)}s`);
+    console.log(`   ⏱ Lote ${rows.length}: SOAP Prom: ${avgSoap.toFixed(0)}ms | Regula Prom: ${avgRegula.toFixed(0)}ms | Proc: ${(totalProcessingTime / 1000).toFixed(1)}s | DB Update: ${(updateTime / 1000).toFixed(1)}s`);
 
     return resultados;
 }
@@ -176,6 +203,7 @@ async function workerPorAnio(anio) {
         connection = await getIcvConnection();
 
         while (true) {
+            const fetchStart = Date.now();
             const result = await connection.execute(
                 `
                 SELECT *
@@ -183,71 +211,28 @@ async function workerPorAnio(anio) {
                     SELECT *
                     FROM licencias_icv
                     WHERE procesada = 0
-                    AND TO_CHAR(fecha_pago, 'YYYY') = :anio
+                    AND fecha_pago >= TO_DATE(:anio || '-01-01', 'YYYY-MM-DD')
+                    AND fecha_pago < TO_DATE((:anio + 1) || '-01-01', 'YYYY-MM-DD')
                     ORDER BY fecha_pago DESC, licencia DESC
                 )
                 WHERE ROWNUM <= :limite
                 `,
-                { anio: anio.toString(), limite: LOTE },
+                { anio: parseInt(anio), limite: LOTE },
                 { outFormat: oracledb.OUT_FORMAT_OBJECT }
             );
 
             const rows = result.rows;
+            const fetchTime = Date.now() - fetchStart;
 
             if (rows.length === 0) {
                 console.log(`✅ Año ${anio} terminado`);
                 break;
             }
 
-            console.log(`📦 Año ${anio} → lote ${rows.length}`);
+            console.log(`📦 Año ${anio} → lote ${rows.length} (Oracle Fetch: ${fetchTime}ms)`);
 
-            // Procesar lote (paralelo con límite)
-            const resultados = await procesarLote(rows);
-
-            // Separar éxitos de errores
-            const exitosos = resultados
-                .filter(r => r.ok)
-                .map(r => ({ licencia: r.licencia }));
-
-            const fallidos = resultados
-                .filter(r => !r.ok)
-                .map(r => ({ licencia: r.licencia }));
-
-            // 1. Actualizar Exitosos (Status 1)
-            if (exitosos.length > 0) {
-                const updateResult = await connection.executeMany(
-                    `
-                    UPDATE licencias_icv
-                    SET procesada = 1
-                    WHERE licencia = :licencia
-                    `,
-                    exitosos
-                );
-                const affected = updateResult.rowsAffected || 0;
-                console.log(`   ✔ ${exitosos.length} enviados -> ${affected} filas actualizadas en DB (Exitosos)`);
-                if (exitosos.length > 0) {
-                    console.log(`     Muestra: [${exitosos[0].licencia} ... ${exitosos[exitosos.length-1].licencia}]`);
-                }
-            }
-
-            // 2. Actualizar Fallidos (Status 4)
-            if (fallidos.length > 0) {
-                const updateResult = await connection.executeMany(
-                    `
-                    UPDATE licencias_icv
-                    SET procesada = 4
-                    WHERE licencia = :licencia
-                    `,
-                    fallidos
-                );
-                const affected = updateResult.rowsAffected || 0;
-                console.log(`   ❌ ${fallidos.length} enviados -> ${affected} filas actualizadas en DB (Fallidos)`);
-            }
-
-            // Commit de los cambios del lote
-            if (exitosos.length > 0 || fallidos.length > 0) {
-                await connection.commit();
-            }
+            // Procesar lote y actualizar DB (ahora todo dentro de procesarLote para métrica unificada)
+            await procesarLote(rows, connection);
         }
 
     } catch (err) {
@@ -272,7 +257,7 @@ async function taskOracleCheck() {
 
     try {
         // Ajusta los años según tus datos
-        const anios = [2024, 2025, 2026];
+        const anios = [2026];
 
         await Promise.all(
             anios.map(anio => workerPorAnio(anio))

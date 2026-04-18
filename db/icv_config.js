@@ -26,7 +26,7 @@ const icvConfig = {
 const poolConfig = {
     ...icvConfig,
     poolMin: parseInt(process.env.ICV_DB_POOL_MIN) || 2,
-    poolMax: parseInt(process.env.ICV_DB_POOL_MAX) || 10,
+    poolMax: parseInt(process.env.ICV_DB_POOL_MAX) || 50,
     poolIncrement: parseInt(process.env.ICV_DB_POOL_INCREMENT) || 1,
     poolAlias: 'icvPool',
 };
