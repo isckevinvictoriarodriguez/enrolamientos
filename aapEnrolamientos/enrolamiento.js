@@ -163,6 +163,4 @@ async function taskAapCheck() {
     }
 }
 
-taskAapCheck();
-
 module.exports = { taskAapCheck };
