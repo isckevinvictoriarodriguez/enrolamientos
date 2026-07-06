@@ -63,7 +63,7 @@ async function procesarImagen(base64, row) {
     }
 
     // filename: concatenar p_curp + '_' + p_name + p_appat + p_appmat
-    const filename = `${row.p_curp}_${row.p_name || ''}_${row.p_appat || ''}_${row.p_appmat || ''}`.replace(/\s+/g, '');
+    const filename = `${row.p_id}_${row.p_curp}`;
 
     const payload = {
         image_base64: base64, // conversion de p_pic
