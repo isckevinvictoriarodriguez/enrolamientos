@@ -11,6 +11,7 @@ const CONCURRENCIA = parseInt(process.env.ICV_CONCURRENCIA);
 const URL_FOTO = process.env.ICV_URL_FOTO;
 const REGULA_URL = process.env.REGULA_URL ? process.env.REGULA_URL + '/api/v1/faces/upload' : null;
 const REGULA_ICV_GROUP_ID = process.env.REGULA_ICV_GROUP_ID;
+const BIOMETRIC_API_SECRET = process.env.BIOMETRIC_API_SECRET || '';
 
 // =====================================
 // UTILIDADES
@@ -102,6 +103,9 @@ async function procesarImagen(base64, row) {
 
     try {
         const resp = await axios.post(REGULA_URL, payload, {
+            headers: {
+                "biometric-api-secret": BIOMETRIC_API_SECRET
+            },
             timeout: 30000 // 30 segundos solicitados
         });
         // console.log("resp data -> ", JSON.stringify(resp.data).substring(0, 500));

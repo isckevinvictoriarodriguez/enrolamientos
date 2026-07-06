@@ -12,6 +12,7 @@ const LOTE = parseInt(process.env.CISEC_LOTE) || 1000;
 const CONCURRENCIA = parseInt(process.env.CISEC_CONCURRENCIA) || 5;
 const REGULA_URL = process.env.REGULA_URL ? process.env.REGULA_URL + '/api/v1/faces/upload' : null;
 const REGULA_GROUP_ID = process.env.CISEC_REGULA_GROUP_ID;
+const BIOMETRIC_API_SECRET = process.env.BIOMETRIC_API_SECRET || '';
 
 // =====================================
 // UTILIDADES
@@ -76,6 +77,9 @@ async function procesarImagen(base64, row) {
 
     try {
         const resp = await axios.post(REGULA_URL, payload, {
+            headers: {
+                "biometric-api-secret": BIOMETRIC_API_SECRET
+            },
             timeout: 30000
         });
         return { success: true, data: resp.data };

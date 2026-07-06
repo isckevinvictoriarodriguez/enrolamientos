@@ -11,6 +11,7 @@ const DGA_API_URL = process.env.DGA_API_URL || 'https://siass.nl.gob.mx/api/v1/f
 const DGA_COOLDOWN_MS = parseInt(process.env.DGA_COOLDOWN_MS) || 2000; // Cooldown de 2 segundos por defecto
 
 const REGULA_URL = process.env.REGULA_URL ? process.env.REGULA_URL + '/api/v1/faces/upload' : null;
+const BIOMETRIC_API_SECRET = process.env.BIOMETRIC_API_SECRET || '';
 
 /**
  * Utilidad de sleep/delay.
@@ -26,7 +27,7 @@ async function fetchWithRetry(url, options = {}, retries = 5, delayMs = 5000) {
     } catch (err) {
         const status = err.response ? err.response.status : null;
         const isNetworkError = !err.response || err.code === 'ECONNRESET' || err.message.includes('socket hang up') || err.code === 'ETIMEDOUT';
-        
+
         if ((status === 429 || isNetworkError) && retries > 0) {
             const reason = status === 429 ? 'Límite de peticiones (429)' : `Error de red/conexión (${err.code || err.message})`;
             console.warn(`⚠️ ${reason}. Reintentando en ${delayMs / 1000}s... (${retries} reintentos restantes)`);
@@ -66,6 +67,9 @@ async function procesarImagen(base64, employee) {
 
     try {
         const resp = await axios.post(REGULA_URL, payload, {
+            headers: {
+                "biometric-api-secret": BIOMETRIC_API_SECRET
+            },
             timeout: 30000 // 30 segundos
         });
         return { success: true, data: resp.data };
@@ -116,7 +120,7 @@ async function procesarLote(employees) {
     const avgRegula = resultados.reduce((a, b) => a + b.regulaTime, 0) / (employees.length || 1);
 
     console.log(`   ⏱ Lote ${employees.length}: Regula Prom: ${avgRegula.toFixed(0)}ms | Total Proc: ${(totalProcessingTime / 1000).toFixed(1)}s`);
-    
+
     return resultados;
 }
 
@@ -138,10 +142,10 @@ async function taskDgaCheck() {
         while (true) {
             const fetchStart = Date.now();
             console.log(`\n🔄 Solicitando página (Offset: ${offset}, Limit: ${LIMIT})...`);
-            
+
             const url = `${DGA_API_URL}?api_key=${DGA_API_KEY}&limit=${LIMIT}&offset=${offset}`;
             const resp = await fetchWithRetry(url, { timeout: 30000 });
-            
+
             const responseData = resp.data;
             const data = responseData?.data || [];
             const pagination = responseData?.pagination || {};
@@ -158,7 +162,7 @@ async function taskDgaCheck() {
             }
 
             const resultadosLote = await procesarLote(data);
-            
+
             const exitosos = resultadosLote.filter(r => r.ok).length;
             const fallidos = resultadosLote.filter(r => !r.ok).length;
             totalExitosos += exitosos;
