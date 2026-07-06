@@ -51,7 +51,7 @@ async function procesarImagen(base64, row) {
     try {
         const resp = await axios.post(REGULA_URL, payload, {
             headers: {
-                "biometric-api-secret": BIOMETRIC_API_SECRET
+                "x-api-secret": BIOMETRIC_API_SECRET
             },
             timeout: 30000
         });
