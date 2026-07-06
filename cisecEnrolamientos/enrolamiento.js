@@ -23,7 +23,7 @@ function getLastWatermark() {
         try {
             const parsed = JSON.parse(data);
             return { date: parsed.last_date, id: parsed.last_id || '' };
-        } catch (e) {}
+        } catch (e) { }
     }
     return { date: '1900-01-01', id: '' };
 }
@@ -154,7 +154,7 @@ async function taskCisecCheck() {
 
             const watermark = getLastWatermark();
 
-            // TODO: Actualiza "NombreDeTuTabla" con la vista real de CISEC
+            // TODO: Actualiza "CECC_FC" con la vista real de CISEC
             const result = await pool.request()
                 .input('limit', sql.Int, LOTE)
                 .input('lastDate', sql.NVarChar, watermark.date)
@@ -162,7 +162,7 @@ async function taskCisecCheck() {
                 .query(`
                     SELECT TOP (@limit) 
                         p_id, p_curp, p_pic, p_fecha_alta_inicio, p_name, p_appat, p_appmat
-                    FROM NombreDeTuTabla 
+                    FROM CECC_FC 
                     WHERE p_fecha_alta_inicio > @lastDate
                        OR (p_fecha_alta_inicio = @lastDate AND p_id > @lastId)
                     ORDER BY p_fecha_alta_inicio ASC, p_id ASC
