@@ -17,6 +17,10 @@ lerna-debug.log*
 # media
 fotos/
 
+# control procesados
+cisec_fallidos*
+cisec_watermark*
+
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 

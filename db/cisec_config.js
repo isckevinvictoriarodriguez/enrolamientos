@@ -27,7 +27,6 @@ let poolPromise;
  */
 async function getCisecPool() {
     if (!poolPromise) {
-        console.log('parametros de conexion -> ', cisecConfig)
         poolPromise = new sql.ConnectionPool(cisecConfig)
             .connect()
             .then(pool => {
