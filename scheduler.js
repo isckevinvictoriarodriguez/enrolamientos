@@ -1,17 +1,23 @@
 const { spawn } = require('child_process');
 
 console.log("Iniciando Programador (Scheduler) de Enrolamientos...");
-console.log("- AAP: Lunes a las 11:00 AM");
-console.log("- CISEC: Martes a las 11:00 AM");
-console.log("- DGA: Miércoles a las 11:00 AM");
-console.log("- ICV: Jueves a las 11:00 AM");
+console.log("- AAP: Lunes a las 1:00 AM");
+console.log("- CISEC: Martes a las 1:00 AM");
+console.log("- DGA: Miércoles a las 1:00 AM");
+console.log("- ICV: Jueves a las 1:00 AM");
+console.log("- AAP: Viernes a las 1:00 AM");
+console.log("- DGA: Sábado a las 1:00 AM");
+console.log("- ICV: Domingo a las 1:00 AM");
 
 // Mapa de día de la semana (0=Domingo, 1=Lunes, ..., 4=Jueves) al script correspondiente
 const scheduleMap = {
     1: 'enrolamientoAAP.js',   // Lunes
     2: 'enrolamientoCISEC.js', // Martes
     3: 'enrolamientoDGA.js',   // Miércoles
-    4: 'testEnrolamietoICV.js' // Jueves
+    4: 'enrolamientoICV.js', // Jueves
+    5: 'enrolamientoAAP.js', // Viernes
+    6: 'enrolamientoDGA.js', // Sábado
+    7: 'enrolamientoICV.js', // Domingo
 };
 
 let lastRunDay = -1;
@@ -22,8 +28,8 @@ function checkTime() {
     const hour = now.getHours();
     const minute = now.getMinutes();
 
-    // Revisa si son las 11:00 AM, si hay una tarea para hoy, y si no se ha ejecutado hoy
-    if (hour === 11 && minute === 0 && scheduleMap[dayOfWeek] && lastRunDay !== dayOfWeek) {
+    // Revisa si son las 01:00 AM, si hay una tarea para hoy, y si no se ha ejecutado hoy
+    if (hour === 1 && minute === 0 && scheduleMap[dayOfWeek] && lastRunDay !== dayOfWeek) {
         lastRunDay = dayOfWeek; // Marcar que ya corrió hoy
         const scriptName = scheduleMap[dayOfWeek];
         console.log(`[${now.toLocaleString()}] ¡Es la hora! Ejecutando tarea programada: ${scriptName}`);
