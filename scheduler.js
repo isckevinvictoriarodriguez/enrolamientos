@@ -14,10 +14,10 @@ const scheduleMap = {
     1: 'enrolamientoAAP.js',   // Lunes
     2: 'enrolamientoCISEC.js', // Martes
     3: 'enrolamientoDGA.js',   // Miércoles
-    4: 'enrolamientoICV.js', // Jueves
+    // 4: 'enrolamientoICV.js', // Jueves
     5: 'enrolamientoAAP.js', // Viernes
     6: 'enrolamientoDGA.js', // Sábado
-    7: 'enrolamientoICV.js', // Domingo
+    // 7: 'enrolamientoICV.js', // Domingo
 };
 
 let lastRunDay = -1;
