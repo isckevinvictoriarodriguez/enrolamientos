@@ -1,22 +1,61 @@
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const axios = require('axios');
 const pLimit = require('p-limit');
+const { crearControlCarga, esErrorTransitorio } = require('../utils/controlCarga.js');
 
 // CONFIGURACIÓN desde .env
 const DGA_API_KEY = process.env.DGA_API_KEY;
-const LIMIT = parseInt(process.env.DGA_LIMIT) || 5;
+const LIMIT = parseInt(process.env.DGA_LIMIT) || 50;
 const START_OFFSET = parseInt(process.env.DGA_OFFSET) || 1;
 const DGA_REGULA_GROUP_ID = process.env.DGA_REGULA_GROUP_ID;
 const DGA_CONCURRENCIA = parseInt(process.env.DGA_CONCURRENCIA) || 5;
 const DGA_API_URL = process.env.DGA_API_URL || 'https://siass.nl.gob.mx/api/v1/fa7d8939f8914340847371e3d7afaf70';
 const DGA_COOLDOWN_MS = parseInt(process.env.DGA_COOLDOWN_MS) || 2000; // Cooldown de 2 segundos por defecto
 
+// Control de carga (0 = deshabilitado). El tope cuenta envíos a Regula, no registros leídos del API
+const MAX_REGISTROS = parseInt(process.env.DGA_MAX_REGISTROS) || 0;
+const MAX_ERROR_PCT = parseFloat(process.env.DGA_MAX_ERROR_PCT) || 0;
+const MAX_REGULA_MS = parseInt(process.env.DGA_MAX_REGULA_MS) || 0;
+
 const REGULA_URL = process.env.REGULA_URL ? process.env.REGULA_URL + '/api/v1/faces/upload' : null;
 const BIOMETRIC_API_SECRET = process.env.BIOMETRIC_API_SECRET || '';
+
+// Caché de fotos enviadas (numero_empleado -> hash) y cursor de paginación entre ejecuciones
+const CACHE_FILE = path.join(__dirname, 'dga_enrolados.json');
+const CURSOR_FILE = path.join(__dirname, 'dga_cursor.json');
+
+// Limpia caché y cursor para reenviar todo (los duplicados los descarta el backend por nombre y hash)
+const REINICIAR = process.argv.includes('--reiniciar');
+
+const ESTADO = { ENROLADO: 'enrolado', DUPLICADO: 'duplicado', ERROR: 'error', REINTENTO: 'reintento' };
 
 /**
  * Utilidad de sleep/delay.
  */
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+function leerJson(file, valorDefault) {
+    if (fs.existsSync(file)) {
+        try {
+            return JSON.parse(fs.readFileSync(file, 'utf8'));
+        } catch (e) { }
+    }
+    return valorDefault;
+}
+
+function guardarJson(file, data) {
+    fs.writeFileSync(file, JSON.stringify(data), 'utf8');
+}
+
+function claveEmpleado(employee) {
+    return String(employee.numero_empleado ?? employee.id);
+}
+
+function hashImagen(base64) {
+    return crypto.createHash('sha256').update(base64 || '').digest('hex');
+}
 
 /**
  * Realiza peticiones GET con reintentos inteligentes ante códigos de estado de límite de tasa (HTTP 429).
@@ -49,7 +88,9 @@ async function procesarImagen(base64, employee) {
     }
 
     if (!REGULA_URL || !DGA_REGULA_GROUP_ID) {
-        throw new Error("CONFIGURACIÓN DE REGULA NO ENCONTRADA (Verificar .env)");
+        const error = new Error("CONFIGURACIÓN DE REGULA NO ENCONTRADA (Verificar .env)");
+        error.transitorio = true;
+        throw error;
     }
 
     // Como filename vamos a utilizar numero_empleado
@@ -72,56 +113,63 @@ async function procesarImagen(base64, employee) {
             },
             timeout: 30000 // 30 segundos
         });
-        return { success: true, data: resp.data };
+        // El backend intermedio responde SUCCESS con "Duplicado por hash" cuando la imagen ya estaba enrolada
+        const duplicado = /duplicado/i.test(String(resp.data && resp.data.message || ''));
+        return { success: true, duplicado, data: resp.data };
     } catch (err) {
         const errorData = err.response ? err.response.data : null;
         const errorMsg = errorData ? JSON.stringify(errorData) : err.message;
-        throw new Error(`Error en REGULA FACE API para numero_empleado: ${employee.numero_empleado} -> ${errorMsg}`);
+        const error = new Error(`Error en REGULA FACE API para numero_empleado: ${employee.numero_empleado} -> ${errorMsg}`);
+        error.transitorio = esErrorTransitorio(err);
+        throw error;
     }
 }
 
 /**
- * Procesa un lote de empleados en paralelo.
+ * Procesa en paralelo los empleados cuya foto no está en caché o cambió.
+ * Enrolados, duplicados y errores definitivos se guardan en caché con su hash;
+ * los transitorios no, para que se reintenten en la siguiente pasada.
  */
-async function procesarLote(employees) {
+async function procesarLote(employees, cache) {
     const limit = pLimit(DGA_CONCURRENCIA);
     const startTime = Date.now();
 
     const resultados = await Promise.all(
         employees.map(employee =>
             limit(async () => {
-                let regulaTime = 0;
+                const regulaStart = Date.now();
+                const base64 = employee.image_256;
+                let estado;
                 try {
-                    const regulaStart = Date.now();
-                    const base64 = employee.image_256;
                     const resp = await procesarImagen(base64, employee);
-                    regulaTime = Date.now() - regulaStart;
-
-                    return {
-                        id: employee.id,
-                        numero_empleado: employee.numero_empleado,
-                        ok: resp.success === true,
-                        regulaTime
-                    };
+                    estado = resp.duplicado ? ESTADO.DUPLICADO : ESTADO.ENROLADO;
                 } catch (err) {
-                    console.error(`ID: ${employee.id} | Numero Empleado: ${employee.numero_empleado} -> Error: ${err.message}`);
-                    return {
-                        id: employee.id,
-                        numero_empleado: employee.numero_empleado,
-                        ok: false,
-                        regulaTime: 0
+                    console.error(`ID: ${employee.id} | Numero Empleado: ${employee.numero_empleado} [${err.transitorio ? 'reintento' : 'error'}] -> Error: ${err.message}`);
+                    estado = err.transitorio ? ESTADO.REINTENTO : ESTADO.ERROR;
+                }
+
+                if (estado !== ESTADO.REINTENTO) {
+                    cache[claveEmpleado(employee)] = {
+                        hash: hashImagen(base64),
+                        estado: estado === ESTADO.ERROR ? ESTADO.ERROR : ESTADO.ENROLADO,
+                        fecha: new Date().toISOString()
                     };
                 }
+
+                return { estado, regulaTime: Date.now() - regulaStart };
             })
         )
     );
 
     const totalProcessingTime = Date.now() - startTime;
+
+    const conteo = estado => resultados.filter(r => r.estado === estado).length;
+    const reintentos = conteo(ESTADO.REINTENTO);
     const avgRegula = resultados.reduce((a, b) => a + b.regulaTime, 0) / (employees.length || 1);
 
-    console.log(`   ⏱ Lote ${employees.length}: Regula Prom: ${avgRegula.toFixed(0)}ms | Total Proc: ${(totalProcessingTime / 1000).toFixed(1)}s`);
+    console.log(`   ⏱ Enviados ${employees.length} (✅ ${conteo(ESTADO.ENROLADO)} | ♻ duplicados ${conteo(ESTADO.DUPLICADO)} | ❌ ${conteo(ESTADO.ERROR)} | 🔁 reintento ${reintentos}): Regula Prom: ${avgRegula.toFixed(0)}ms | Total Proc: ${(totalProcessingTime / 1000).toFixed(1)}s`);
 
-    return resultados;
+    return { total: employees.length, reintentos, avgRegula };
 }
 
 /**
@@ -133,13 +181,29 @@ async function taskDgaCheck() {
     console.log(`Regula URL: ${REGULA_URL}`);
     console.log(`Grupo Regula: ${DGA_REGULA_GROUP_ID}`);
 
-    let offset = START_OFFSET;
+    const control = crearControlCarga({
+        sistema: 'DGA',
+        lote: LIMIT,
+        maxRegistros: MAX_REGISTROS,
+        maxErrorPct: MAX_ERROR_PCT,
+        maxRegulaMs: MAX_REGULA_MS
+    });
+
+    if (REINICIAR) {
+        console.log('🔄 --reiniciar: se limpian caché y cursor, se reenviará todo');
+        guardarJson(CACHE_FILE, {});
+        guardarJson(CURSOR_FILE, { offset: START_OFFSET });
+    }
+
+    const cache = leerJson(CACHE_FILE, {});
+    let offset = parseInt(leerJson(CURSOR_FILE, {}).offset) || START_OFFSET;
     let paginasProcesadas = 0;
-    let totalExitosos = 0;
-    let totalFallidos = 0;
+    let omitidos = 0;
+
+    console.log(`${control.descripcion()} | Cursor: offset ${offset} | Empleados en caché: ${Object.keys(cache).length}`);
 
     try {
-        while (true) {
+        while (!control.debeDetener()) {
             const fetchStart = Date.now();
             console.log(`\n🔄 Solicitando página (Offset: ${offset}, Limit: ${LIMIT})...`);
 
@@ -157,30 +221,47 @@ async function taskDgaCheck() {
             }
 
             if (data.length === 0) {
-                console.log(`✅ No hay más registros pendientes de procesar en el API de DGA.`);
+                console.log(`✅ No hay más registros pendientes de procesar en el API de DGA. Vuelta completa, el cursor regresa a ${START_OFFSET}.`);
+                guardarJson(CURSOR_FILE, { offset: START_OFFSET });
                 break;
             }
 
-            const resultadosLote = await procesarLote(data);
+            // Solo se envían los empleados nuevos o con foto distinta a la de caché
+            const pendientes = data.filter(employee => {
+                const previo = cache[claveEmpleado(employee)];
+                return !previo || previo.hash !== hashImagen(employee.image_256);
+            });
+            omitidos += data.length - pendientes.length;
 
-            const exitosos = resultadosLote.filter(r => r.ok).length;
-            const fallidos = resultadosLote.filter(r => !r.ok).length;
-            totalExitosos += exitosos;
-            totalFallidos += fallidos;
+            // El tope se aplica por página completa, puede excederse hasta en LIMIT - 1 envíos
+            const cupo = control.reservarCupo();
+            control.liberarCupo(cupo - pendientes.length);
+
+            if (pendientes.length > 0) {
+                const resumen = await procesarLote(pendientes, cache);
+                guardarJson(CACHE_FILE, cache);
+
+                // Con saturación el cursor no avanza: la siguiente ejecución reintenta esta misma página
+                if (control.registrarLote(resumen, `offset ${offset}`)) break;
+            } else {
+                console.log(`   ⏭ Sin cambios en esta página, se omite el envío`);
+            }
 
             paginasProcesadas++;
 
             // Validar si alcanzamos el total reportado por la paginación para evitar bucles
             if (pagination.total !== undefined && offset + data.length - 1 >= pagination.total) {
-                console.log(`✅ Se alcanzó el total de registros disponibles en DGA (${pagination.total}).`);
+                console.log(`✅ Se alcanzó el total de registros disponibles en DGA (${pagination.total}). Vuelta completa, el cursor regresa a ${START_OFFSET}.`);
+                guardarJson(CURSOR_FILE, { offset: START_OFFSET });
                 break;
             }
 
-            // Incrementar el offset en código
+            // Incrementar el offset en código y guardarlo para continuar en la siguiente ejecución si se detiene
             offset += LIMIT;
+            guardarJson(CURSOR_FILE, { offset });
 
             // Esperar cooldown para no saturar el servidor
-            if (DGA_COOLDOWN_MS > 0) {
+            if (DGA_COOLDOWN_MS > 0 && !control.debeDetener()) {
                 await sleep(DGA_COOLDOWN_MS);
             }
         }
@@ -188,8 +269,8 @@ async function taskDgaCheck() {
         console.log(`\n🎉 Proceso DGA completo.`);
         console.log(`📊 Resumen final:`);
         console.log(`   - Páginas procesadas: ${paginasProcesadas}`);
-        console.log(`   - Enrolados con éxito: ${totalExitosos}`);
-        console.log(`   - Fallidos: ${totalFallidos}`);
+        console.log(`   - ${control.resumenFinal()}`);
+        console.log(`   - Omitidos sin cambios: ${omitidos}`);
 
     } catch (err) {
         console.error("❌ Error general en el proceso de enrolamiento DGA:", err.message);

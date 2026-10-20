@@ -61,16 +61,21 @@ function crearControlCarga({ sistema, lote, maxRegistros = 0, maxErrorPct = 0, m
         if (maxRegistros > 0) control.asignados -= sobrante;
     };
 
-    // Circuit breaker: si Regula muestra saturación, se detiene para no competir con otro enrolamiento
+    // Circuit breaker: si Regula muestra saturación, se detiene para no competir con otro enrolamiento.
+    // Regresa true cuando el lote provocó la detención por saturación
     control.registrarLote = ({ total, reintentos, avgRegula }, nombre) => {
         control.procesados += total;
         const pctReintentos = total ? reintentos * 100 / total : 0;
 
         if (maxErrorPct > 0 && pctReintentos >= maxErrorPct) {
             control.detener(`circuit breaker: ${pctReintentos.toFixed(0)}% de errores transitorios en lote (${nombre})`);
-        } else if (maxRegulaMs > 0 && avgRegula > maxRegulaMs) {
-            control.detener(`circuit breaker: Regula promedió ${avgRegula.toFixed(0)}ms en lote (${nombre}), límite ${maxRegulaMs}ms`);
+            return true;
         }
+        if (maxRegulaMs > 0 && avgRegula > maxRegulaMs) {
+            control.detener(`circuit breaker: Regula promedió ${avgRegula.toFixed(0)}ms en lote (${nombre}), límite ${maxRegulaMs}ms`);
+            return true;
+        }
+        return false;
     };
 
     control.descripcion = () =>
