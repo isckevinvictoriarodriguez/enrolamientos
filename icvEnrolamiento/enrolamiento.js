@@ -4,7 +4,7 @@ const pLimit = require('p-limit');
 const xmlbuilder = require('xmlbuilder');
 const xml2js = require('xml2js');
 const { getIcvConnection } = require('../db/icv_config.js');
-const { calcularFechaLimite } = require('../utils/horario.js');
+const { crearControlCarga, esErrorTransitorio, esperar } = require('../utils/controlCarga.js');
 
 // CONFIGURACIÓN desde .env
 const LOTE = parseInt(process.env.ICV_LOTE);
@@ -32,8 +32,6 @@ const ESTATUS = {
     REINTENTO: 5  // Error transitorio, se regresa a PENDIENTE al iniciar la siguiente ejecución
 };
 
-const CODIGOS_RED_TRANSITORIOS = ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE'];
-
 // =====================================
 // UTILIDADES
 // =====================================
@@ -46,22 +44,6 @@ function extraerNombreImagen(fullPath) {
     const baseName = fullPath.split(/[\\/]/).pop();
     const nameWithoutExt = baseName.split('.')[0];
     return nameWithoutExt.replace(/\s+/g, '_');
-}
-
-/**
- * Un error es transitorio cuando no depende del registro: timeout, red, saturación (5xx/429)
- * o credenciales (401/403). Estos registros se reintentan en lugar de marcarse como error.
- */
-function esErrorTransitorio(err) {
-    if (err.response) {
-        const status = err.response.status;
-        return status >= 500 || [401, 403, 408, 429].includes(status);
-    }
-    return !!err.request || CODIGOS_RED_TRANSITORIOS.includes(err.code);
-}
-
-function esperar(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function obtenerBase64(foto) {
@@ -233,51 +215,6 @@ async function procesarLote(rows, connection) {
 }
 
 // =====================================
-// CONTROL DE CARGA
-// =====================================
-
-function marcarDetencion(control, motivo) {
-    if (control.detener) return;
-    control.detener = true;
-    control.motivo = motivo;
-    console.log(`⛔ Deteniendo enrolamiento ICV: ${motivo}`);
-}
-
-function debeDetener(control) {
-    if (control.detener) return true;
-
-    if (MAX_REGISTROS > 0 && control.asignados >= MAX_REGISTROS) {
-        marcarDetencion(control, `tope de ${MAX_REGISTROS} registros por ejecución alcanzado`);
-    } else if (control.fechaLimite && new Date() >= control.fechaLimite) {
-        marcarDetencion(control, `hora límite alcanzada (${control.fechaLimite.toLocaleString()})`);
-    }
-    return control.detener;
-}
-
-// Reserva el cupo del siguiente lote antes de consultar, para respetar el tope con varios workers en paralelo
-function reservarCupo(control) {
-    if (MAX_REGISTROS <= 0) return LOTE;
-    const cupo = Math.min(LOTE, MAX_REGISTROS - control.asignados);
-    control.asignados += cupo;
-    return cupo;
-}
-
-function liberarCupo(control, sobrante) {
-    if (MAX_REGISTROS > 0) control.asignados -= sobrante;
-}
-
-// Circuit breaker: si Regula/SOAP muestran saturación, se detiene para no competir con otro enrolamiento
-function evaluarSaturacion(resumen, control, nombre) {
-    const pctReintentos = resumen.reintentos * 100 / resumen.total;
-
-    if (MAX_ERROR_PCT > 0 && pctReintentos >= MAX_ERROR_PCT) {
-        marcarDetencion(control, `circuit breaker: ${pctReintentos.toFixed(0)}% de errores transitorios en lote (${nombre})`);
-    } else if (MAX_REGULA_MS > 0 && resumen.avgRegula > MAX_REGULA_MS) {
-        marcarDetencion(control, `circuit breaker: Regula promedió ${resumen.avgRegula.toFixed(0)}ms en lote (${nombre}), límite ${MAX_REGULA_MS}ms`);
-    }
-}
-
-// =====================================
 // WORKERS
 // =====================================
 
@@ -313,8 +250,8 @@ async function ejecutarWorker(nombre, consulta, binds, control) {
     try {
         connection = await getIcvConnection();
 
-        while (!debeDetener(control)) {
-            const limite = reservarCupo(control);
+        while (!control.debeDetener()) {
+            const limite = control.reservarCupo();
 
             const fetchStart = Date.now();
             const result = await connection.execute(
@@ -325,7 +262,7 @@ async function ejecutarWorker(nombre, consulta, binds, control) {
 
             const rows = result.rows;
             const fetchTime = Date.now() - fetchStart;
-            liberarCupo(control, limite - rows.length);
+            control.liberarCupo(limite - rows.length);
 
             if (rows.length === 0) {
                 console.log(`✅ ${nombre} terminado`);
@@ -335,10 +272,9 @@ async function ejecutarWorker(nombre, consulta, binds, control) {
             console.log(`📦 ${nombre} → lote ${rows.length} (Oracle Fetch: ${fetchTime}ms)`);
 
             const resumen = await procesarLote(rows, connection);
-            control.procesados += rows.length;
-            evaluarSaturacion(resumen, control, nombre);
+            control.registrarLote(resumen, nombre);
 
-            if (PAUSA_LOTE_MS > 0 && !debeDetener(control)) {
+            if (PAUSA_LOTE_MS > 0 && !control.debeDetener()) {
                 await esperar(PAUSA_LOTE_MS);
             }
         }
@@ -406,15 +342,15 @@ async function taskOracleCheck() {
         return;
     }
 
-    const control = {
-        asignados: 0,
-        procesados: 0,
-        detener: false,
-        motivo: null,
-        fechaLimite: calcularFechaLimite()
-    };
+    const control = crearControlCarga({
+        sistema: 'ICV',
+        lote: LOTE,
+        maxRegistros: MAX_REGISTROS,
+        maxErrorPct: MAX_ERROR_PCT,
+        maxRegulaMs: MAX_REGULA_MS
+    });
 
-    console.log(`Modo: ${MODO}${MODO === 'anio' ? ` [${ANIOS.join(', ')}]` : ''} | Tope: ${MAX_REGISTROS || 'sin tope'} | Hora límite: ${control.fechaLimite ? control.fechaLimite.toLocaleString() : 'sin límite'}`);
+    console.log(`Modo: ${MODO}${MODO === 'anio' ? ` [${ANIOS.join(', ')}]` : ''} | ${control.descripcion()}`);
 
     try {
         await prepararEjecucion();
@@ -428,7 +364,7 @@ async function taskOracleCheck() {
             );
         }
 
-        console.log(`🎉 Proceso completo. Registros procesados: ${control.procesados}${control.motivo ? ` | Detenido por: ${control.motivo}` : ''}`);
+        console.log(`🎉 Proceso completo. ${control.resumenFinal()}`);
 
     } catch (err) {
         console.error("Error general en el proceso de enrolamiento:", err);
