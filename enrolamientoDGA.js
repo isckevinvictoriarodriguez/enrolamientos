@@ -6,6 +6,6 @@ const { taskDgaCheck } = require('./dgaEnrolamientos/enrolamiento.js');
 taskDgaCheck()
     .then(() => process.exit(0))
     .catch(err => {
-        console.error("❌ Error en el script principal de DGA:", err);
+        console.error("❌ Error en el script principal de DGA:", err.message);
         process.exit(1);
     });

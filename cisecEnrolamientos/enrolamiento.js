@@ -4,6 +4,7 @@ const axios = require('axios');
 const pLimit = require('p-limit');
 const { getCisecPool, sql } = require('../db/cisec_config.js');
 const { crearControlCarga, esErrorTransitorio, esperar } = require('../utils/controlCarga.js');
+const { leerJson, guardarJson } = require('../utils/archivos.js');
 
 const WATERMARK_FILE = path.join(__dirname, 'cisec_watermark.json');
 const FAILURES_FILE = path.join(__dirname, 'cisec_fallidos.log');
@@ -39,34 +40,25 @@ const COLUMNAS = 'p_id, p_curp, p_pic, p_fecha_ingreso, p_name, p_appat, p_appma
  * fecha + id ordenados por fecha, por lo que su id no sirve como cursor y se reinicia a 0.
  */
 function getLastWatermark() {
-    if (fs.existsSync(WATERMARK_FILE)) {
-        try {
-            const parsed = JSON.parse(fs.readFileSync(WATERMARK_FILE, 'utf8'));
-            if (parsed.last_date !== undefined) {
-                console.log(`Watermark anterior por fecha (${parsed.last_date} / ${parsed.last_id}), se reinicia el cursor por p_id desde 0`);
-                return 0;
-            }
-            return parseInt(parsed.last_id) || 0;
-        } catch (e) { }
+    const parsed = leerJson(WATERMARK_FILE, {});
+    if (parsed.last_date !== undefined) {
+        console.log(`Watermark anterior por fecha (${parsed.last_date} / ${parsed.last_id}), se reinicia el cursor por p_id desde 0`);
+        return 0;
     }
-    return 0;
+    return parseInt(parsed.last_id) || 0;
 }
 
 function saveWatermark(lastId) {
-    fs.writeFileSync(WATERMARK_FILE, JSON.stringify({ last_id: lastId, actualizado: new Date().toISOString() }), 'utf8');
+    guardarJson(WATERMARK_FILE, { last_id: lastId, actualizado: new Date().toISOString() });
 }
 
 function cargarReintentos() {
-    if (fs.existsSync(RETRY_FILE)) {
-        try {
-            return JSON.parse(fs.readFileSync(RETRY_FILE, 'utf8')).map(id => parseInt(id)).filter(id => !isNaN(id));
-        } catch (e) { }
-    }
-    return [];
+    const ids = leerJson(RETRY_FILE, []);
+    return Array.isArray(ids) ? ids.map(id => parseInt(id)).filter(id => !isNaN(id)) : [];
 }
 
 function guardarReintentos(ids) {
-    fs.writeFileSync(RETRY_FILE, JSON.stringify([...new Set(ids)]), 'utf8');
+    guardarJson(RETRY_FILE, [...new Set(ids)]);
 }
 
 function logFailure(p_id, errorMsg) {

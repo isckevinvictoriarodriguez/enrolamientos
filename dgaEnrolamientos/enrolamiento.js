@@ -1,9 +1,9 @@
-const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const axios = require('axios');
 const pLimit = require('p-limit');
 const { crearControlCarga, esErrorTransitorio } = require('../utils/controlCarga.js');
+const { leerJson, guardarJson } = require('../utils/archivos.js');
 
 // CONFIGURACIÓN desde .env
 const DGA_API_KEY = process.env.DGA_API_KEY;
@@ -36,25 +36,22 @@ const ESTADO = { ENROLADO: 'enrolado', DUPLICADO: 'duplicado', ERROR: 'error', R
  */
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-function leerJson(file, valorDefault) {
-    if (fs.existsSync(file)) {
-        try {
-            return JSON.parse(fs.readFileSync(file, 'utf8'));
-        } catch (e) { }
-    }
-    return valorDefault;
-}
-
-function guardarJson(file, data) {
-    fs.writeFileSync(file, JSON.stringify(data), 'utf8');
-}
-
 function claveEmpleado(employee) {
     return String(employee.numero_empleado ?? employee.id);
 }
 
 function hashImagen(base64) {
     return crypto.createHash('sha256').update(base64 || '').digest('hex');
+}
+
+/**
+ * Error del API DGA. Con 401/403 (API Key no válida) se marca como error de autenticación
+ * para detener la ejecución sin mover el cursor.
+ */
+function errorApiDga(code, mensaje) {
+    const error = new Error(`API DGA respondió error: ${mensaje} (code ${code})`);
+    error.autenticacion = code === 401 || code === 403;
+    return error;
 }
 
 /**
@@ -72,6 +69,10 @@ async function fetchWithRetry(url, options = {}, retries = 5, delayMs = 5000) {
             console.warn(`⚠️ ${reason}. Reintentando en ${delayMs / 1000}s... (${retries} reintentos restantes)`);
             await sleep(delayMs);
             return fetchWithRetry(url, options, retries - 1, delayMs * 1.5);
+        }
+        if (err.response) {
+            const body = err.response.data || {};
+            throw errorApiDga(status, body.error || err.message);
         }
         throw err;
     }
@@ -189,6 +190,12 @@ async function taskDgaCheck() {
         maxRegulaMs: MAX_REGULA_MS
     });
 
+    if (!DGA_API_KEY) {
+        const error = new Error('DGA_API_KEY no configurada (Verificar .env)');
+        error.autenticacion = true;
+        throw error;
+    }
+
     if (REINICIAR) {
         console.log('🔄 --reiniciar: se limpian caché y cursor, se reenviará todo');
         guardarJson(CACHE_FILE, {});
@@ -211,6 +218,12 @@ async function taskDgaCheck() {
             const resp = await fetchWithRetry(url, { timeout: 30000 });
 
             const responseData = resp.data;
+
+            // El API puede responder el error en el cuerpo: { error, code, timestamp }
+            if (responseData?.error) {
+                throw errorApiDga(responseData.code, responseData.error);
+            }
+
             const data = responseData?.data || [];
             const pagination = responseData?.pagination || {};
             const fetchTime = Date.now() - fetchStart;
@@ -273,6 +286,11 @@ async function taskDgaCheck() {
         console.log(`   - Omitidos sin cambios: ${omitidos}`);
 
     } catch (err) {
+        if (err.autenticacion) {
+            // Se propaga para terminar con código 1; el cursor queda en la última página completada
+            console.error(`⛔ Deteniendo enrolamiento DGA por autenticación: ${err.message}`);
+            throw err;
+        }
         console.error("❌ Error general en el proceso de enrolamiento DGA:", err.message);
     }
 }
