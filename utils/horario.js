@@ -2,9 +2,12 @@
  * Calcula la fecha límite de ejecución de los enrolamientos.
  * - ENROL_FECHA_LIMITE (ISO): la envía el scheduler a cada script de la cola.
  * - ENROL_HORA_LIMITE (HH:MM): próxima ocurrencia de esa hora a partir de `desde`.
+ * - ENROL_SIN_LIMITE=1: la envía el scheduler al carril frecuente para ignorar la hora límite del .env.
  * Regresa null si no hay límite configurado.
  */
 function calcularFechaLimite(desde = new Date()) {
+    if (process.env.ENROL_SIN_LIMITE === '1') return null;
+
     if (process.env.ENROL_FECHA_LIMITE) {
         const fecha = new Date(process.env.ENROL_FECHA_LIMITE);
         if (!isNaN(fecha)) return fecha;
